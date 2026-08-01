@@ -6,13 +6,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.10 python3-pip git libsndfile1 \
+    python3.10 python3-pip git libsndfile1 sox libsox-dev libsox-fmt-all \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip3 install -r requirements.txt
+RUN pip3 install numpy>=1.24.0 \
+    && pip3 install --no-build-isolation -r requirements.txt
 
 # Референс-голос владельца (склеен из voice_clone_ky/wav через prep_reference.py)
 COPY reference_voice.wav /app/reference_voice.wav
