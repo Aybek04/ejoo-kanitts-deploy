@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip3 install numpy>=1.24.0 \
+RUN pip3 install numpy>=1.24.0 typing_extensions setuptools wheel \
     && pip3 install --no-build-isolation -r requirements.txt
 
 # Референс-голос владельца (склеен из voice_clone_ky/wav через prep_reference.py)
