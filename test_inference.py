@@ -7,13 +7,15 @@ secret-keeper.
 Запуск (когда секреты будут доступны, например через sops-обёртку):
     RUNPOD_API_KEY=... RUNPOD_ENDPOINT_ID=... python test_inference.py
 
-Каждая фраза уходит отдельным /runsync запросом (синхронный, ждёт ответа —
-годится для разового прослушивания, для прод-нагрузки нужен /run + poll).
+Каждая фраза уходит отдельным /run запросом (асинхронный) с опросом
+/status/{id}, пока воркер не ответит — холодный старт (загрузка модели
+в память GPU) может занимать дольше, чем внутренний таймаут /runsync.
 Результаты сохраняются как test_out_1.wav .. test_out_5.wav рядом со скриптом.
 """
 import base64
 import os
 import sys
+import time
 import wave
 
 import requests
@@ -27,21 +29,42 @@ PHRASES = [
 ]
 
 SAMPLE_RATE = 22050  # нативная частота модели, без ресемплинга
+POLL_INTERVAL_SECONDS = 5
+MAX_WAIT_SECONDS = 300  # холодный старт GPU-модели может быть долгим
 
 
 def synthesize(api_key: str, endpoint_id: str, text: str) -> bytes:
-    url = f"https://api.runpod.ai/v2/{endpoint_id}/runsync"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {"input": {"text": text, "sampleRate": SAMPLE_RATE}}
-    resp = requests.post(url, headers=headers, json=payload, timeout=120)
+    resp = requests.post(
+        f"https://api.runpod.ai/v2/{endpoint_id}/run",
+        headers=headers,
+        json=payload,
+        timeout=30,
+    )
     resp.raise_for_status()
-    data = resp.json()
-    output = data.get("output") or {}
-    if "error" in output:
-        raise RuntimeError(f"handler error: {output['error']}")
-    if "audio_base64" not in output:
-        raise RuntimeError(f"unexpected response: {data}")
-    return base64.b64decode(output["audio_base64"])
+    job_id = resp.json()["id"]
+
+    status_url = f"https://api.runpod.ai/v2/{endpoint_id}/status/{job_id}"
+    waited = 0
+    while waited < MAX_WAIT_SECONDS:
+        status_resp = requests.get(status_url, headers=headers, timeout=30)
+        status_resp.raise_for_status()
+        data = status_resp.json()
+        status = data.get("status")
+        if status == "COMPLETED":
+            output = data.get("output") or {}
+            if "error" in output:
+                raise RuntimeError(f"handler error: {output['error']}")
+            if "audio_base64" not in output:
+                raise RuntimeError(f"unexpected response: {data}")
+            return base64.b64decode(output["audio_base64"])
+        if status == "FAILED":
+            raise RuntimeError(f"job failed: {data}")
+        time.sleep(POLL_INTERVAL_SECONDS)
+        waited += POLL_INTERVAL_SECONDS
+
+    raise RuntimeError(f"timed out after {MAX_WAIT_SECONDS}s waiting for job {job_id}")
 
 
 def save_wav(path: str, pcm_bytes: bytes, sample_rate: int) -> None:

@@ -39,7 +39,27 @@ speaker_embedding = embedder.embed_audio_file(REFERENCE_AUDIO_PATH)
 print("Ready.")
 
 
+def _normalize_loudness(audio_f32: np.ndarray, window_ms: float = 200, target_rms: float = 0.15) -> np.ndarray:
+    """Выравнивает "волны" громкости внутри фразы короткооконным AGC:
+    считает RMS по окнам, сглаживает огибающую и приводит её к target_rms,
+    ограничивая максимальное усиление, чтобы не поднимать шум в тихих паузах."""
+    win_samples = max(1, int(window_ms / 1000 * 22050))
+    n = len(audio_f32)
+    if n == 0:
+        return audio_f32
+    envelope = np.zeros(n, dtype=np.float32)
+    for start in range(0, n, win_samples):
+        end = min(start + win_samples, n)
+        rms = float(np.sqrt(np.mean(audio_f32[start:end] ** 2)) + 1e-6)
+        envelope[start:end] = rms
+    # сглаживаем огибающую, чтобы избежать резких скачков усиления между окнами
+    smooth = np.convolve(envelope, np.ones(5) / 5, mode="same")
+    gain = np.clip(target_rms / smooth, 0.5, 4.0)
+    return audio_f32 * gain
+
+
 def _to_pcm16(audio_f32: np.ndarray, src_rate: int, dst_rate: int) -> bytes:
+    audio_f32 = _normalize_loudness(audio_f32)
     if src_rate != dst_rate:
         audio_f32 = resample_poly(audio_f32, dst_rate, src_rate)
     audio_f32 = np.clip(audio_f32, -1.0, 1.0)
