@@ -24,7 +24,7 @@ import os
 import numpy as np
 import runpod
 from kani_tts import KaniTTS, SpeakerEmbedder
-from scipy.signal import resample_poly
+from scipy.signal import lfilter, resample_poly
 
 MODEL_ID = os.environ.get("KANI_MODEL_ID", "nineninesix/kani-tts-2-pt")
 REFERENCE_AUDIO_PATH = os.environ.get("REFERENCE_AUDIO_PATH", "/app/reference_voice.wav")
@@ -39,23 +39,31 @@ speaker_embedding = embedder.embed_audio_file(REFERENCE_AUDIO_PATH)
 print("Ready.")
 
 
-def _normalize_loudness(audio_f32: np.ndarray, window_ms: float = 200, target_rms: float = 0.15) -> np.ndarray:
-    """Выравнивает "волны" громкости внутри фразы короткооконным AGC:
-    считает RMS по окнам, сглаживает огибающую и приводит её к target_rms,
-    ограничивая максимальное усиление, чтобы не поднимать шум в тихих паузах."""
-    win_samples = max(1, int(window_ms / 1000 * 22050))
+def _normalize_loudness(
+    audio_f32: np.ndarray,
+    target_rms: float = 0.15,
+    smooth_ms: float = 50.0,
+    noise_floor: float = 0.02,
+    max_gain: float = 3.0,
+) -> np.ndarray:
+    """AGC на непрерывной огибающей (однополюсный фильтр по мощности сигнала),
+    без блочных "ступенек" усиления между окнами — прежняя блочная версия резко
+    переключала gain каждые 200мс, что и звучало как "волны" громкости.
+    noise_floor не даёт задирать усиление в тихих паузах/фоновом шуме."""
     n = len(audio_f32)
     if n == 0:
         return audio_f32
-    envelope = np.zeros(n, dtype=np.float32)
-    for start in range(0, n, win_samples):
-        end = min(start + win_samples, n)
-        rms = float(np.sqrt(np.mean(audio_f32[start:end] ** 2)) + 1e-6)
-        envelope[start:end] = rms
-    # сглаживаем огибающую, чтобы избежать резких скачков усиления между окнами
-    smooth = np.convolve(envelope, np.ones(5) / 5, mode="same")
-    gain = np.clip(target_rms / smooth, 0.5, 4.0)
-    return audio_f32 * gain
+    power = audio_f32.astype(np.float64) ** 2
+    alpha = float(np.exp(-1.0 / (smooth_ms / 1000 * NATIVE_SAMPLE_RATE)))
+    envelope_power = lfilter([1 - alpha], [1, -alpha], power)
+    rms_env = np.sqrt(np.maximum(envelope_power, 0.0)) + 1e-6
+    gain = np.clip(target_rms / rms_env, 1.0 / max_gain, max_gain)
+    gain = np.where(rms_env < noise_floor, 1.0, gain)
+    out = (audio_f32 * gain).astype(np.float32)
+    peak = float(np.max(np.abs(out))) + 1e-9
+    if peak > 0.99:
+        out = out * (0.99 / peak)
+    return out
 
 
 def _to_pcm16(audio_f32: np.ndarray, src_rate: int, dst_rate: int) -> bytes:
