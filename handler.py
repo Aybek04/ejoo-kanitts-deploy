@@ -29,9 +29,7 @@ from scipy.signal import lfilter, resample_poly
 MODEL_ID = os.environ.get("KANI_MODEL_ID", "nineninesix/kani-tts-2-pt")
 REFERENCE_AUDIO_PATH = os.environ.get("REFERENCE_AUDIO_PATH", "/app/reference_voice.wav")
 NATIVE_SAMPLE_RATE = 22050  # см. model card kani-tts-2-pt
-SPEED_FACTOR = float(os.environ.get("KANI_SPEED_FACTOR", "1.0"))  # ponytail: 1.15 звучал "пьяно" (resample_poly
-# меняет тон/смазывает согласные, это не time-stretch) — выключено; включать заново только вместе с нормальным
-# time-stretch (librosa/pyrubberband), а не голым ресемплингом
+SPEED_FACTOR = float(os.environ.get("KANI_SPEED_FACTOR", "1.12"))  # overlap-add time-stretch, тон не плывёт
 
 print("Loading KaniTTS-2 model (cold start)...")
 model = KaniTTS(MODEL_ID, show_info=False)
@@ -44,7 +42,7 @@ print("Ready.")
 
 def _normalize_loudness(
     audio_f32: np.ndarray,
-    target_rms: float = 0.15,
+    target_rms: float = 0.22,
     smooth_ms: float = 50.0,
     noise_floor: float = 0.02,
     max_gain: float = 3.0,
@@ -69,15 +67,38 @@ def _normalize_loudness(
     return out
 
 
-def _adjust_speed(audio_f32: np.ndarray, factor: float) -> np.ndarray:
-    """Ускоряет воспроизведение ресемплингом (сжимает длительность в factor раз).
-    Побочный эффект — тон чуть выше при ускорении; для небольшого шага (~1.1-1.2x)
-    почти незаметно на слух, отдельного time-stretch (без изменения тона) не заводим,
-    чтобы не тащить лишнюю тяжёлую зависимость в и так хрупкую сборку Docker-образа."""
+def _adjust_speed(
+    audio_f32: np.ndarray,
+    factor: float,
+    sr: int = NATIVE_SAMPLE_RATE,
+    frame_ms: float = 32.0,
+    overlap_ratio: float = 0.5,
+) -> np.ndarray:
+    """Ускоряет воспроизведение через overlap-add time-stretch (в отличие от
+    прежнего варианта на resample_poly — тон не меняется, не звучит "пьяно",
+    т.к. это не ресемплинг, а прямое сжатие временной шкалы с перекрытием окон.
+    Простой OLA без WSOLA-поиска — для шага ~1.1-1.15x этого достаточно, для
+    более сильного ускорения могут появиться лёгкие фазовые призвуки."""
     if factor == 1.0 or len(audio_f32) == 0:
         return audio_f32
-    down = max(1, int(round(1000 * factor)))
-    return resample_poly(audio_f32, 1000, down)
+    frame = int(sr * frame_ms / 1000)
+    hop_out = max(1, int(frame * (1 - overlap_ratio)))
+    hop_in = max(1, int(round(hop_out * factor)))
+    window = np.hanning(frame)
+    n_frames = max(1, (len(audio_f32) - frame) // hop_in + 1)
+    out_len = (n_frames - 1) * hop_out + frame
+    out = np.zeros(out_len, dtype=np.float64)
+    norm = np.zeros(out_len, dtype=np.float64)
+    for i in range(n_frames):
+        in_start = i * hop_in
+        seg = audio_f32[in_start:in_start + frame].astype(np.float64)
+        if len(seg) < frame:
+            seg = np.pad(seg, (0, frame - len(seg)))
+        out_start = i * hop_out
+        out[out_start:out_start + frame] += seg * window
+        norm[out_start:out_start + frame] += window
+    norm[norm < 1e-6] = 1.0
+    return (out / norm).astype(np.float32)
 
 
 def _to_pcm16(audio_f32: np.ndarray, src_rate: int, dst_rate: int) -> bytes:
