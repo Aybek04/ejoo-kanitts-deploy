@@ -15,7 +15,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip3 install numpy>=1.24.0 typing_extensions setuptools wheel \
     && pip3 install --no-build-isolation -r requirements.txt \
-    && pip3 install --no-deps transformers==4.56.0 tokenizers==0.23.0
+    && pip3 install --no-deps transformers==4.56.0 tokenizers==0.22.0
 
 # Референс-голос владельца (склеен из voice_clone_ky/wav через prep_reference.py)
 COPY reference_voice.wav /app/reference_voice.wav
