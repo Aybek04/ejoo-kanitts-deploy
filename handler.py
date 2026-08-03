@@ -29,7 +29,9 @@ from scipy.signal import lfilter, resample_poly
 MODEL_ID = os.environ.get("KANI_MODEL_ID", "nineninesix/kani-tts-2-pt")
 REFERENCE_AUDIO_PATH = os.environ.get("REFERENCE_AUDIO_PATH", "/app/reference_voice.wav")
 NATIVE_SAMPLE_RATE = 22050  # см. model card kani-tts-2-pt
-SPEED_FACTOR = float(os.environ.get("KANI_SPEED_FACTOR", "1.15"))  # "1 пункт" ускорения
+SPEED_FACTOR = float(os.environ.get("KANI_SPEED_FACTOR", "1.0"))  # ponytail: 1.15 звучал "пьяно" (resample_poly
+# меняет тон/смазывает согласные, это не time-stretch) — выключено; включать заново только вместе с нормальным
+# time-stretch (librosa/pyrubberband), а не голым ресемплингом
 
 print("Loading KaniTTS-2 model (cold start)...")
 model = KaniTTS(MODEL_ID, show_info=False)
