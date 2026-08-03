@@ -29,6 +29,7 @@ from scipy.signal import lfilter, resample_poly
 MODEL_ID = os.environ.get("KANI_MODEL_ID", "nineninesix/kani-tts-2-pt")
 REFERENCE_AUDIO_PATH = os.environ.get("REFERENCE_AUDIO_PATH", "/app/reference_voice.wav")
 NATIVE_SAMPLE_RATE = 22050  # см. model card kani-tts-2-pt
+SPEED_FACTOR = float(os.environ.get("KANI_SPEED_FACTOR", "1.15"))  # "1 пункт" ускорения
 
 print("Loading KaniTTS-2 model (cold start)...")
 model = KaniTTS(MODEL_ID, show_info=False)
@@ -66,7 +67,19 @@ def _normalize_loudness(
     return out
 
 
+def _adjust_speed(audio_f32: np.ndarray, factor: float) -> np.ndarray:
+    """Ускоряет воспроизведение ресемплингом (сжимает длительность в factor раз).
+    Побочный эффект — тон чуть выше при ускорении; для небольшого шага (~1.1-1.2x)
+    почти незаметно на слух, отдельного time-stretch (без изменения тона) не заводим,
+    чтобы не тащить лишнюю тяжёлую зависимость в и так хрупкую сборку Docker-образа."""
+    if factor == 1.0 or len(audio_f32) == 0:
+        return audio_f32
+    down = max(1, int(round(1000 * factor)))
+    return resample_poly(audio_f32, 1000, down)
+
+
 def _to_pcm16(audio_f32: np.ndarray, src_rate: int, dst_rate: int) -> bytes:
+    audio_f32 = _adjust_speed(audio_f32, SPEED_FACTOR)
     audio_f32 = _normalize_loudness(audio_f32)
     if src_rate != dst_rate:
         audio_f32 = resample_poly(audio_f32, dst_rate, src_rate)
