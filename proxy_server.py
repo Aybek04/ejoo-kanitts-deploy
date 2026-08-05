@@ -74,7 +74,11 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             pcm_bytes = call_runpod(text, sample_rate)
-        except (HTTPError, RuntimeError, KeyError) as exc:
+        except Exception as exc:
+            # ловим ЛЮБОЕ исключение (не только HTTPError/RuntimeError/KeyError) —
+            # RunPod cold start даёт URLError/socket.timeout, не HTTPError; необработанное
+            # исключение здесь рвёт соединение БЕЗ HTTP-ответа (Apache видит "error reading
+            # status line"), и Vapi никогда не получает 502 — просто вечная тишина в звонке.
             self.send_response(502)
             self.end_headers()
             self.wfile.write(str(exc).encode())
